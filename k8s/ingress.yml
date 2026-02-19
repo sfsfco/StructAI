@@ -1,0 +1,54 @@
+# StructAI – Ingress (TLS-terminated Nginx Ingress Controller)
+#
+# Prerequisites:
+#   - Nginx Ingress Controller installed (or any Ingress controller)
+#   - cert-manager for automatic TLS certificates (optional)
+#
+# For cloud load balancers, use the appropriate annotations:
+#   AWS ALB:   kubernetes.io/ingress.class: alb
+#   GCP GCLB:  kubernetes.io/ingress.class: gce
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: structai-ingress
+  namespace: structai
+  labels:
+    app.kubernetes.io/name: structai
+  annotations:
+    # Nginx Ingress Controller annotations
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    # Rate limiting at ingress level
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+    # Enable CORS
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    # cert-manager TLS (uncomment when ready)
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  # TLS configuration (uncomment when ready)
+  # tls:
+  #   - hosts:
+  #       - api.structai.example.com
+  #     secretName: structai-tls
+  rules:
+    - host: api.structai.example.com    # Replace with your domain
+      http:
+        paths:
+          - path: /api/
+            pathType: Prefix
+            backend:
+              service:
+                name: structai-api
+                port:
+                  number: 80
+          - path: /metrics
+            pathType: Exact
+            backend:
+              service:
+                name: structai-api
+                port:
+                  number: 80

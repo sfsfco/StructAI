@@ -1,0 +1,178 @@
+# StructAI – Worker Deployments (split by queue for independent scaling)
+#
+# Indexing workers: handle embedding generation + FAISS indexing (CPU-heavy)
+# Default workers:  handle lightweight tasks + maintenance
+#
+# Each deployment can be scaled independently via its own HPA.
+
+---
+# ── Indexing Worker Deployment ───────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: structai-worker-indexing
+  namespace: structai
+  labels:
+    app.kubernetes.io/name: structai
+    app.kubernetes.io/component: worker-indexing
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: worker-indexing
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: structai
+        app.kubernetes.io/component: worker-indexing
+    spec:
+      terminationGracePeriodSeconds: 120   # Give tasks time to finish
+      containers:
+        - name: worker
+          image: structai/worker:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: structai-config
+            - secretRef:
+                name: structai-secrets
+          command:
+            - celery
+            - -A
+            - worker.worker
+            - worker
+            - --loglevel=info
+            - -Q
+            - indexing
+            - --concurrency=2
+            - --hostname=indexing-worker@%h
+            - --max-tasks-per-child=100
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          volumeMounts:
+            - name: faiss-data
+              mountPath: /app/data/faiss
+      volumes:
+        - name: faiss-data
+          persistentVolumeClaim:
+            claimName: faiss-pvc
+
+---
+# ── Default Worker Deployment ────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: structai-worker-default
+  namespace: structai
+  labels:
+    app.kubernetes.io/name: structai
+    app.kubernetes.io/component: worker-default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: worker-default
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: structai
+        app.kubernetes.io/component: worker-default
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: worker
+          image: structai/worker:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: structai-config
+            - secretRef:
+                name: structai-secrets
+          command:
+            - celery
+            - -A
+            - worker.worker
+            - worker
+            - --loglevel=info
+            - -Q
+            - default,maintenance
+            - --concurrency=4
+            - --hostname=default-worker@%h
+            - --max-tasks-per-child=500
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: faiss-data
+              mountPath: /app/data/faiss
+      volumes:
+        - name: faiss-data
+          persistentVolumeClaim:
+            claimName: faiss-pvc
+
+---
+# ── Celery Beat (single replica — singleton) ────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: structai-beat
+  namespace: structai
+  labels:
+    app.kubernetes.io/name: structai
+    app.kubernetes.io/component: beat
+spec:
+  replicas: 1                   # MUST be exactly 1 to avoid duplicate schedules
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: beat
+  strategy:
+    type: Recreate               # Ensure only one instance runs at a time
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: structai
+        app.kubernetes.io/component: beat
+    spec:
+      containers:
+        - name: beat
+          image: structai/worker:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: structai-config
+            - secretRef:
+                name: structai-secrets
+          command:
+            - celery
+            - -A
+            - worker.worker
+            - beat
+            - --loglevel=info
+            - --pidfile=/tmp/celerybeat.pid
+            - --schedule=/tmp/celerybeat-schedule
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi

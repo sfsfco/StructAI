@@ -1,0 +1,162 @@
+# ═══════════════════════════════════════════════════════════════════════
+#  StructAI – Production Docker Compose
+# ═══════════════════════════════════════════════════════════════════════
+#
+#  This file targets production / staging deployments where:
+#    • Nginx sits in front of the API as a reverse-proxy / load-balancer
+#    • API runs with Gunicorn (multiple uvicorn workers per container)
+#    • Workers can be scaled independently per queue type
+#    • Prometheus + Grafana monitor the stack
+#
+#  Usage
+#  ─────
+#  Start:
+#    docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+#  Scale API replicas:
+#    docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --scale api=3
+#
+#  Scale indexing workers:
+#    docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --scale worker-indexing=4
+#
+#  Scale default workers:
+#    docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --scale worker-default=2
+#
+# ═══════════════════════════════════════════════════════════════════════
+
+services:
+  # ── Nginx Reverse Proxy / Load Balancer ────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: structai_nginx
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+    networks:
+      - backend
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── API (override for production: gunicorn + no reload) ────────────
+  api:
+    # Remove container_name so --scale api=N works
+    container_name: ""
+    command: >
+      gunicorn app.main:app
+      -c app/core/gunicorn_conf.py
+      --bind 0.0.0.0:8000
+    environment:
+      - DEBUG=false
+      - WEB_CONCURRENCY=${WEB_CONCURRENCY:-4}
+      - MAX_REQUESTS=2000
+      - MAX_REQUESTS_JITTER=200
+      - WORKER_TIMEOUT=120
+      - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus_multiproc
+    # Don't expose host ports when behind Nginx
+    ports: []
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+      replicas: ${API_REPLICAS:-2}
+
+  # ── Indexing Workers (heavy GPU/IO tasks — scale independently) ────
+  worker-indexing:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      target: runtime
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - faiss_data:/app/data/faiss
+    networks:
+      - backend
+    command: >
+      celery -A worker.worker worker
+      --loglevel=info
+      -Q indexing
+      --concurrency=${INDEXING_WORKER_CONCURRENCY:-2}
+      --hostname=indexing-worker@%h
+      --max-tasks-per-child=100
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+      replicas: ${INDEXING_WORKER_REPLICAS:-2}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ── Default Workers (light tasks, finalisation) ────────────────────
+  worker-default:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      target: runtime
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - faiss_data:/app/data/faiss
+    networks:
+      - backend
+    command: >
+      celery -A worker.worker worker
+      --loglevel=info
+      -Q default,maintenance
+      --concurrency=${DEFAULT_WORKER_CONCURRENCY:-4}
+      --hostname=default-worker@%h
+      --max-tasks-per-child=500
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+      replicas: ${DEFAULT_WORKER_REPLICAS:-1}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ── Disable the combined worker from base compose ──────────────────
+  worker:
+    profiles:
+      - disabled

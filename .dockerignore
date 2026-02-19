@@ -1,0 +1,46 @@
+# ── Version Control ─────────────────────────────────────────────────────
+.git
+.gitignore
+
+# ── Python ──────────────────────────────────────────────────────────────
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.eggs
+dist
+build
+
+# ── Virtual Environments ───────────────────────────────────────────────
+.venv
+venv
+env
+
+# ── IDE / Editor ────────────────────────────────────────────────────────
+.vscode
+.idea
+*.swp
+*.swo
+
+# ── Environment & Secrets ──────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Docker ──────────────────────────────────────────────────────────────
+Dockerfile
+Dockerfile.*
+docker-compose*.yml
+.dockerignore
+
+# ── Tests & CI ──────────────────────────────────────────────────────────
+tests
+.pytest_cache
+htmlcov
+.coverage
+
+# ── Documentation & Misc ──────────────────────────────────────────────
+AI
+*.md
+LICENSE
+data

@@ -1,0 +1,278 @@
+version: "3.9"
+
+# ═══════════════════════════════════════════════════════════════════════
+#  StructAI – Docker Compose (API, Worker, Beat, Flower, PG, Redis)
+# ═══════════════════════════════════════════════════════════════════════
+#
+#  Usage
+#  ─────
+#  Development:   docker compose up --build
+#  Detached:      docker compose up -d --build
+#  Scale workers: docker compose up -d --scale worker=3
+#  Logs:          docker compose logs -f api worker
+#  Tear down:     docker compose down -v   (removes volumes too)
+#
+#  Secrets
+#  ───────
+#  Copy .env.example → .env and fill in real values before first run.
+#  NEVER commit .env to version control.
+# ═══════════════════════════════════════════════════════════════════════
+
+services:
+  # ── FastAPI Application ─────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: structai_api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Named volume shared with workers so both can read/write the FAISS index
+      - faiss_data:/app/data/faiss
+    networks:
+      - backend
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # ── Celery Worker (default + indexing queues) ───────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      target: runtime
+    # container_name omitted so `--scale worker=N` works
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - faiss_data:/app/data/faiss
+    networks:
+      - backend
+    command: >
+      celery -A worker.worker worker
+      --loglevel=info
+      -Q default,indexing,maintenance
+      --concurrency=2
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+        reservations:
+          cpus: "0.25"
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Celery Beat Scheduler ──────────────────────────────────────────
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      target: runtime
+    container_name: structai_beat
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+    command: >
+      celery -A worker.worker beat
+      --loglevel=info
+      --pidfile=/tmp/celerybeat.pid
+      --schedule=/tmp/celerybeat-schedule
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  # ── Flower (Celery monitoring dashboard) ───────────────────────────
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      target: runtime
+    container_name: structai_flower
+    env_file:
+      - .env
+    ports:
+      - "${FLOWER_PORT:-5555}:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+    command: >
+      celery -A worker.worker flower
+      --port=5555
+      --broker_api=redis://redis:6379/0
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: structai_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ai_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ai_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_db}
+    ports:
+      - "${PG_PORT:-5432}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    shm_size: 128mb           # Prevents "out of shared memory" under load
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-ai_user} -d $${POSTGRES_DB:-ai_db}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Redis ──────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: structai_redis
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Prometheus (metrics collection) ────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: structai_prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    networks:
+      - backend
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  # ── Grafana (metrics dashboards) ───────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: structai_grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    networks:
+      - backend
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+# ── Volumes ────────────────────────────────────────────────────────────
+#  faiss_data : Persists the FAISS index across container restarts.
+#               Shared between API (reads at startup) and Worker (writes
+#               new vectors after indexing tasks complete).
+#  pg_data   : PostgreSQL data directory.
+#  redis_data: Redis AOF persistence.
+volumes:
+  faiss_data:
+    driver: local
+  pg_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+# ── Networks ───────────────────────────────────────────────────────────
+#  Single internal bridge network — all services communicate here.
+#  Only api, flower, db, and redis expose host ports.
+networks:
+  backend:
+    driver: bridge

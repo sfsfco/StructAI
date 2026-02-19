@@ -1,0 +1,84 @@
+# StructAI – Redis Deployment (in-cluster)
+#
+# For production, consider a managed Redis service (ElastiCache,
+# Memorystore, Upstash) for HA, automatic failover, and backups.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: structai
+  labels:
+    app.kubernetes.io/name: structai
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: structai
+        app.kubernetes.io/component: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          command:
+            - redis-server
+            - --maxmemory
+            - 256mb
+            - --maxmemory-policy
+            - allkeys-lru
+            - --appendonly
+            - "yes"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: structai
+spec:
+  selector:
+    app.kubernetes.io/component: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+  namespace: structai
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi

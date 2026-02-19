@@ -1,0 +1,58 @@
+# StructAI – ConfigMap (non-sensitive configuration)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: structai-config
+  namespace: structai
+  labels:
+    app.kubernetes.io/name: structai
+data:
+  APP_NAME: "StructAI"
+  APP_VERSION: "0.1.0"
+  DEBUG: "false"
+  LOG_LEVEL: "INFO"
+
+  # OpenAI
+  OPENAI_MODEL: "gpt-4o"
+  OPENAI_EMBEDDING_MODEL: "text-embedding-3-small"
+  OPENAI_MAX_TOKENS: "4096"
+  OPENAI_TEMPERATURE: "0.0"
+
+  # PostgreSQL
+  POSTGRES_HOST: "postgres-service"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "ai_db"
+
+  # Redis
+  REDIS_HOST: "redis-service"
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
+  REDIS_CACHE_TTL: "3600"
+
+  # FAISS
+  FAISS_INDEX_DIR: "/app/data/faiss"
+  FAISS_DIMENSION: "1536"
+
+  # Rate Limiting
+  RATE_LIMIT_DEFAULT: "60/minute"
+  RATE_LIMIT_EXTRACT: "10/minute"
+
+  # Backpressure
+  BACKPRESSURE_MAX_INFLIGHT: "100"
+  BACKPRESSURE_MAX_QUEUE_DEPTH: "500"
+
+  # Document Processing
+  CHUNK_SIZE: "512"
+  CHUNK_OVERLAP: "64"
+
+  # Embedding Cache
+  EMBEDDING_CACHE_TTL: "86400"
+
+  # Vector Store
+  VECTOR_STORE_BACKEND: "faiss"
+
+  # Gunicorn
+  WEB_CONCURRENCY: "4"
+  MAX_REQUESTS: "2000"
+  MAX_REQUESTS_JITTER: "200"
+  WORKER_TIMEOUT: "120"

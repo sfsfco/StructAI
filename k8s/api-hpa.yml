@@ -1,0 +1,46 @@
+# StructAI – API Horizontal Pod Autoscaler
+#
+# Scales API pods between 2 and 10 replicas based on CPU and memory.
+# For more advanced scaling (e.g. based on request rate or queue depth),
+# use KEDA (https://keda.sh) with a Prometheus or Redis scaler.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: structai-api-hpa
+  namespace: structai
+  labels:
+    app.kubernetes.io/name: structai
+    app.kubernetes.io/component: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: structai-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120

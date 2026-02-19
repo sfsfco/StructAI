@@ -1,0 +1,8 @@
+# StructAI – Kubernetes Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: structai
+  labels:
+    app.kubernetes.io/name: structai
+    app.kubernetes.io/part-of: structai

@@ -1,0 +1,51 @@
+# ═══════════════════════════════════════════════════════════════════════
+#  docker-compose.test.yml – Test environment
+# ═══════════════════════════════════════════════════════════════════════
+#  Spins up PostgreSQL and Redis for running integration & E2E tests
+#  locally without affecting the dev environment.
+#
+#  Usage:
+#    # Start test dependencies
+#    docker compose -f docker-compose.test.yml up -d
+#
+#    # Run tests
+#    TEST_DATABASE_URL=postgresql+asyncpg://ai_user:ai_pass@localhost:5433/ai_db_test \
+#    TEST_REDIS_URL=redis://localhost:6380/1 \
+#    pytest tests/ -m "integration or e2e"
+#
+#    # Tear down
+#    docker compose -f docker-compose.test.yml down -v
+# ═══════════════════════════════════════════════════════════════════════
+
+services:
+  # ── Test PostgreSQL ────────────────────────────────────────────────
+  test_db:
+    image: postgres:15-alpine
+    container_name: structai_test_postgres
+    environment:
+      POSTGRES_USER: ai_user
+      POSTGRES_PASSWORD: ai_pass
+      POSTGRES_DB: ai_db_test
+    ports:
+      - "5433:5432"     # Different port to avoid conflicts with dev
+    tmpfs:
+      - /var/lib/postgresql/data  # RAM-backed for speed
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_user -d ai_db_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Test Redis ─────────────────────────────────────────────────────
+  test_redis:
+    image: redis:7-alpine
+    container_name: structai_test_redis
+    ports:
+      - "6380:6379"     # Different port to avoid conflicts with dev
+    tmpfs:
+      - /data           # RAM-backed for speed
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

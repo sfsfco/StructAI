@@ -1,0 +1,49 @@
+# StructAI – Worker Horizontal Pod Autoscaler
+#
+# Scales indexing workers based on CPU utilisation.
+# For queue-depth-based autoscaling, use KEDA with a Redis scaler:
+#
+#   apiVersion: keda.sh/v1alpha1
+#   kind: ScaledObject
+#   spec:
+#     triggers:
+#       - type: redis
+#         metadata:
+#           address: redis-service:6379
+#           listName: indexing
+#           listLength: "10"    # scale up when > 10 tasks queued
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: structai-worker-indexing-hpa
+  namespace: structai
+  labels:
+    app.kubernetes.io/name: structai
+    app.kubernetes.io/component: worker-indexing
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: structai-worker-indexing
+  minReplicas: 1
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
